@@ -198,3 +198,110 @@ class WorkanaScraper:
             url,
             headers={
                 **JSON_HEADERS,
+                "Accept-Language": f"{language},en;q=0.9",
+            },
+        )
+        response.raise_for_status()
+        return self._parse_response(response)
+
+    def _build_url(self, page: int, *, language: str) -> str:
+        return (
+            f"{self.BASE_URL}/{language}/jobs"
+            f"?category={self.category}&order=recent&page={page}"
+        )
+
+    @staticmethod
+    def _parse_response(response: Any) -> dict[str, Any]:
+        content_type = response.headers.get("content-type", "")
+        if "application/json" in content_type:
+            body = response.json()
+            if isinstance(body, dict) and "results" in body:
+                payload = body["results"]
+                if isinstance(payload, dict) and "results" in payload:
+                    return payload
+                if isinstance(payload, list):
+                    return {"results": payload}
+            if isinstance(body, dict) and "results" in body.get("results", {}):
+                return body["results"]
+
+        match = RESULTS_INITIALS_PATTERN.search(response.text)
+        if not match:
+            raise ValueError("Could not find Workana job results in response")
+
+        return json.loads(html.unescape(match.group(1)))
+
+    @staticmethod
+    def _extract_title(title_html: str) -> str:
+        if not title_html:
+            return "Untitled project"
+        soup = BeautifulSoup(title_html, "html.parser")
+        span = soup.find("span")
+        candidates: list[str] = []
+        if span and span.get("title"):
+            candidates.append(str(span["title"]).strip())
+        if span:
+            candidates.append(span.get_text(" ", strip=True))
+        candidates.append(soup.get_text(" ", strip=True))
+
+        best = ""
+        for candidate in candidates:
+            cleaned = " ".join(candidate.split())
+            cleaned = cleaned.rstrip(".").rstrip("…").rstrip(".")
+            if cleaned.endswith("..."):
+                cleaned = cleaned[:-3].rstrip()
+            if len(cleaned) > len(best):
+                best = cleaned
+        return best or "Untitled project"
+
+    @staticmethod
+    def _clean_description(description_html: str) -> str:
+        if not description_html:
+            return ""
+        text = BeautifulSoup(description_html, "html.parser").get_text("\n", strip=True)
+        return re.sub(r"\n{3,}", "\n\n", text)
+
+    @staticmethod
+    def _parse_budget(budget: str) -> tuple[float | None, float | None]:
+        if not budget:
+            return None, None
+
+        normalized = budget.replace(".", "").replace(",", "")
+        numbers = re.findall(r"[\d]+", normalized)
+        if not numbers:
+            return None, None
+
+        values = [float(number) for number in numbers[:2]]
+        if len(values) == 1:
+            return values[0], values[0]
+        return values[0], values[1]
+
+    @staticmethod
+    def _parse_bids(total_bids: str) -> int | None:
+        if not total_bids:
+            return None
+        match = re.search(r"(\d+)", total_bids)
+        return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _extract_subcategory(description: str) -> str:
+        if not description:
+            return ""
+        match = re.search(
+            r"(?:Subcategory|Subcategor[ií]a)\s*:?\s*(.+?)(?:\n|Project size|Tama[nñ]o|Skills|Habilidades|$)",
+            description,
+            re.IGNORECASE,
+        )
+        return match.group(1).strip() if match else ""
+
+    @staticmethod
+    def _extract_country(country_html: str) -> str:
+        if not country_html:
+            return "Unknown"
+        soup = BeautifulSoup(country_html, "html.parser")
+        country = soup.select_one(".country-name")
+        if country:
+            return country.get_text(" ", strip=True)
+        img = soup.find("img")
+        if img and img.get("title"):
+            return str(img["title"]).strip()
+        return soup.get_text(" ", strip=True) or "Unknown"
