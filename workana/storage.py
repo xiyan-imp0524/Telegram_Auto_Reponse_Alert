@@ -88,3 +88,89 @@ class JobStore:
     def try_claim_notify(
         self,
         *,
+        slug: str,
+        title: str,
+        url: str,
+        score: float,
+    ) -> bool:
+        """Atomically reserve a job for Telegram send. Cross-process safe."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    "SELECT notified_at, claim_at FROM seen_jobs WHERE slug = ?",
+                    (slug,),
+                ).fetchone()
+                if row is not None:
+                    if row["notified_at"]:
+                        connection.execute("COMMIT")
+                        return False
+                    if row["claim_at"] and not self._claim_is_stale(row["claim_at"]):
+                        connection.execute("COMMIT")
+                        return False
+                    connection.execute(
+                        """
+                        UPDATE seen_jobs
+                        SET title = ?, url = ?, score = ?, claim_at = CURRENT_TIMESTAMP
+                        WHERE slug = ?
+                        """,
+                        (title, url, score, slug),
+                    )
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO seen_jobs (slug, title, url, score, claim_at)
+                        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        """,
+                        (slug, title, url, score),
+                    )
+                connection.execute("COMMIT")
+                return True
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+
+    def release_claim(self, slug: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE seen_jobs
+                SET claim_at = NULL
+                WHERE slug = ? AND notified_at IS NULL
+                """,
+                (slug,),
+            )
+            connection.commit()
+
+    def count_seen(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute("SELECT COUNT(*) AS total FROM seen_jobs").fetchone()
+        return int(row["total"])
+
+    def was_notified(self, slug: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT notified_at FROM seen_jobs WHERE slug = ?",
+                (slug,),
+            ).fetchone()
+        return bool(row and row["notified_at"])
+
+    def list_notified_slugs(self) -> list[str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT slug FROM seen_jobs WHERE notified_at IS NOT NULL"
+            ).fetchall()
+        return [row["slug"] for row in rows]
+
+    def list_slugs(self) -> list[str]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT slug FROM seen_jobs").fetchall()
+        return [row["slug"] for row in rows]
+
+    @classmethod
+    def _claim_is_stale(cls, claim_at: str) -> bool:
+        try:
+            claimed = datetime.fromisoformat(claim_at)
+        except ValueError:
+            return True
+        return datetime.utcnow() - claimed > timedelta(seconds=cls.CLAIM_TTL_SECONDS)
