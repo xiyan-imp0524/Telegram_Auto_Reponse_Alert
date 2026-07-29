@@ -78,3 +78,72 @@ class RealtimeMonitor:
             matched = optimized[0]
             self._remember(
                 matched.slug,
+                matched.title,
+                matched.url,
+                score=matched.score,
+                notified=False,
+            )
+
+            if notify:
+                self.notifier.send_job(matched)
+                self.store.mark_seen(
+                    slug=matched.slug,
+                    title=matched.title,
+                    url=matched.url,
+                    score=matched.score,
+                    notified=True,
+                )
+                sent += 1
+                logger.info("Sent instantly: %s", matched.title)
+
+        return sent if notify else len(new_slugs)
+
+    def _remember(
+        self,
+        slug: str,
+        title: str,
+        url: str,
+        *,
+        score: float,
+        notified: bool,
+    ) -> None:
+        self.store.mark_seen(
+            slug=slug,
+            title=title,
+            url=url,
+            score=score,
+            notified=notified,
+        )
+        self._known_slugs.add(slug)
+
+    def run_forever(
+        self,
+        *,
+        on_error: Callable[[Exception], float] | None = None,
+    ) -> None:
+        interval = self.config.poll_interval_seconds
+        self.notifier.send_text(
+            "Workana realtime monitor started.\n"
+            f"Category: {self.config.workana_category}\n"
+            f"Check interval: {interval}s\n"
+            f"Typical alert delay: ~{interval + 1}s after upload"
+        )
+
+        while True:
+            started = time.perf_counter()
+            try:
+                sent = self.poll_once(notify=True)
+                if sent:
+                    logger.info("Instant alerts sent: %s", sent)
+            except Exception as exc:
+                logger.exception("Realtime poll failed")
+                backoff = on_error(exc) if on_error else min(interval * 2, 30)
+                time.sleep(backoff)
+                continue
+
+            elapsed = time.perf_counter() - started
+            sleep_for = max(0.0, interval - elapsed)
+            time.sleep(sleep_for)
+
+    def close(self) -> None:
+        self.scraper.close()
