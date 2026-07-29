@@ -98,3 +98,103 @@ class WorkanaScraper:
                         batches.append(future.result())
                     except Exception as exc:
                         errors.append(f"{lang}: {exc}")
+                        log.exception(
+                            "Failed fetching Workana jobs for language=%s", lang
+                        )
+
+        if not batches:
+            detail = "; ".join(errors) or "unknown error"
+            raise RuntimeError(
+                f"All Workana language fetches failed ({detail})"
+            )
+
+        if errors:
+            log.warning(
+                "Partial Workana fetch failure (%s/%s langs): %s",
+                len(errors),
+                len(self.languages),
+                "; ".join(errors),
+            )
+
+        for results in batches:
+            for raw in results:
+                slug = raw.get("slug")
+                if not slug or slug in seen_slugs:
+                    continue
+                seen_slugs.add(slug)
+                merged.append(raw)
+        return merged
+
+    def fetch_recent_jobs(self, pages: int = 1) -> list[WorkanaJob]:
+        jobs: list[WorkanaJob] = []
+        seen_slugs: set[str] = set()
+
+        for page in range(1, pages + 1):
+            for raw in self.fetch_all_language_results(page):
+                job = self.normalize_job(raw)
+                if job.slug in seen_slugs:
+                    continue
+                seen_slugs.add(job.slug)
+                jobs.append(job)
+
+        return jobs
+
+    def fetch_slugs(self, page: int = 1) -> list[str]:
+        return [
+            item["slug"]
+            for item in self.fetch_all_language_results(page)
+            if item.get("slug")
+        ]
+
+    def normalize_job(self, raw: dict[str, Any]) -> WorkanaJob:
+        slug = raw["slug"]
+        title = self._extract_title(raw.get("title", ""))
+        description = self._clean_description(raw.get("description", ""))
+        skills = [
+            skill.get("anchorText", "").strip()
+            for skill in raw.get("skills", [])
+            if skill.get("anchorText")
+        ]
+        budget = raw.get("budget", "Not specified")
+        budget_min, budget_max = self._parse_budget(budget)
+        total_bids = self._parse_bids(raw.get("totalBids", ""))
+        country = self._extract_country(raw.get("country", ""))
+        subcategory = self._extract_subcategory(description)
+
+        return WorkanaJob(
+            slug=slug,
+            title=title,
+            url=f"{self.BASE_URL}/job/{slug}",
+            description=description,
+            skills=skills,
+            budget=budget,
+            budget_min_usd=budget_min,
+            budget_max_usd=budget_max,
+            total_bids=total_bids,
+            posted_date=raw.get("postedDate", raw.get("publishedDate", "")),
+            country=country,
+            is_urgent=bool(raw.get("isUrgent")),
+            is_hourly=bool(raw.get("isHourly")),
+            author_name=raw.get("authorName", ""),
+            subcategory=subcategory,
+            has_verified_payment=bool(raw.get("hasVerifiedPaymentMethod")),
+            language=str(raw.get("_language") or self.language),
+            raw=raw,
+        )
+
+    def _client_or_create(self) -> WorkanaHttpClient:
+        if self._client is None:
+            self._client = WorkanaHttpClient(
+                timeout=self.timeout,
+                headers=JSON_HEADERS,
+            )
+            self._owns_client = True
+        return self._client
+
+    def _fetch_payload(self, page: int, *, language: str) -> dict[str, Any]:
+        url = self._build_url(page, language=language)
+        client = self._client_or_create()
+        response = client.get(
+            url,
+            headers={
+                **JSON_HEADERS,
