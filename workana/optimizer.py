@@ -78,3 +78,70 @@ class JobOptimizer:
 
         if self.keywords:
             score += sum(8 for keyword in self.keywords if keyword in haystack)
+
+        if job.is_urgent:
+            score += 10
+
+        if job.total_bids is not None:
+            if job.total_bids <= 5:
+                score += 15
+            elif job.total_bids <= 15:
+                score += 8
+            elif job.total_bids <= 30:
+                score += 3
+
+        budget_ceiling = job.budget_max_usd or job.budget_min_usd
+        if budget_ceiling:
+            score += min(budget_ceiling / 250, 20)
+
+        age_hours = self._posted_age_hours(job.posted_date)
+        if age_hours is not None:
+            if age_hours <= 6:
+                score += 12
+            elif age_hours <= 24:
+                score += 8
+            elif age_hours <= 48:
+                score += 4
+
+        return round(score, 2)
+
+    def _matched_skills(self, job: WorkanaJob) -> list[str]:
+        if not self.preferred_skills:
+            return []
+        return [
+            skill
+            for skill in job.skills
+            if skill.lower() in self.preferred_skills
+        ]
+
+    @staticmethod
+    def _search_text(job: WorkanaJob) -> str:
+        return " ".join(
+            [
+                job.title.lower(),
+                job.description.lower(),
+                " ".join(skill.lower() for skill in job.skills),
+            ]
+        )
+
+    @classmethod
+    def _posted_age_hours(cls, posted_date: str) -> float | None:
+        if not posted_date:
+            return None
+
+        match = cls.AGE_PATTERN.search(posted_date.lower())
+        if not match:
+            return None
+
+        value = int(match.group("value"))
+        unit = match.group("unit").lower()
+
+        if unit.startswith("min"):
+            return value / 60
+        if unit.startswith("hour") or unit.startswith("hora"):
+            return float(value)
+        if unit.startswith("day") or unit.startswith("d"):
+            return value * 24
+        if unit.startswith("week") or unit.startswith("semana"):
+            return value * 24 * 7
+        return None
