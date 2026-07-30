@@ -98,3 +98,89 @@ class PusherMonitor:
             url=matched.url,
             score=matched.score,
             notified=True,
+        )
+        logger.info("Instant alert sent (%s): %s", source, matched.title)
+
+    def _payload_to_job(self, payload: dict[str, Any]) -> WorkanaJob | None:
+        url = payload.get("url", "")
+        slug = self._extract_slug(url, payload)
+        if not slug:
+            logger.debug("Skipping event without slug: %s", payload)
+            return None
+
+        locale = self.config.workana_language
+        title_data = payload.get("title", {})
+        body_data = payload.get("body", {})
+        title = title_data.get(locale) if isinstance(title_data, dict) else str(title_data)
+        description = body_data.get(locale) if isinstance(body_data, dict) else str(body_data)
+
+        skills_raw = payload.get("skills", [])
+        if isinstance(skills_raw, dict):
+            skills = [str(value) for value in skills_raw.values()]
+        else:
+            skills = [str(skill) for skill in skills_raw]
+
+        return WorkanaJob(
+            slug=slug,
+            title=title or "New Workana project",
+            url=f"https://www.workana.com/job/{slug}",
+            description=description or "",
+            skills=skills,
+            budget="Not specified",
+            budget_min_usd=None,
+            budget_max_usd=None,
+            total_bids=None,
+            posted_date="Just now",
+            country="Unknown",
+            is_urgent=False,
+            is_hourly=False,
+            author_name="",
+            raw=payload,
+        )
+
+    def _notification_to_job(self, payload: dict[str, Any]) -> WorkanaJob | None:
+        url = payload.get("url") or payload.get("link") or ""
+        slug = self._extract_slug(url, payload)
+        if not slug:
+            return None
+
+        try:
+            results = self.scraper.fetch_results(page=1)
+            for raw in results:
+                if raw.get("slug") == slug:
+                    return self.scraper.normalize_job(raw)
+        except Exception:
+            logger.exception("Failed to enrich notification for %s", slug)
+
+        title = str(payload.get("title", "New Workana project"))
+        description = str(payload.get("body", ""))
+        return WorkanaJob(
+            slug=slug,
+            title=title,
+            url=f"https://www.workana.com/job/{slug}",
+            description=description,
+            skills=[],
+            budget="Not specified",
+            budget_min_usd=None,
+            budget_max_usd=None,
+            total_bids=None,
+            posted_date="Just now",
+            country="Unknown",
+            is_urgent=False,
+            is_hourly=False,
+            author_name="",
+            raw=payload,
+        )
+
+    @staticmethod
+    def _extract_slug(url: str, payload: dict[str, Any]) -> str | None:
+        if payload.get("slug"):
+            return str(payload["slug"])
+
+        if not url:
+            return None
+
+        path = urlparse(url).path.strip("/")
+        if path.startswith("job/"):
+            return path.split("/", 1)[1]
+        return None
