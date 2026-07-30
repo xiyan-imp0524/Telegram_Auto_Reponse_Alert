@@ -58,3 +58,55 @@ def run_forever(config: AppConfig) -> None:
         return
 
     monitor = RealtimeMonitor(config)
+    try:
+        if config.bootstrap_on_start and monitor.store.count_seen() == 0:
+            seeded = monitor.bootstrap()
+            logger.info(
+                "First run: bootstrapped %s existing jobs — only new uploads will alert",
+                seeded,
+            )
+
+        monitor.run_forever()
+    finally:
+        monitor.close()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Monitor Workana IT & Programming jobs and notify Telegram."
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run one polling cycle and exit.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Scrape and score jobs without sending Telegram messages.",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if not args.once and not args.dry_run:
+        from workana.instance_lock import acquire_singleton_lock
+
+        acquire_singleton_lock()
+    config = AppConfig.from_env(require_telegram=not args.dry_run)
+
+    if args.once or args.dry_run:
+        sent = run_once(config, notify=not args.dry_run)
+        if args.dry_run:
+            logger.info("Dry run complete. %s new jobs detected.", sent)
+            if sent == 0:
+                preview_jobs(config)
+        return 0
+
+    run_forever(config)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
