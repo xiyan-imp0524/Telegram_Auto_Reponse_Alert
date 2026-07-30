@@ -43,3 +43,48 @@ pip install -r requirements.txt
 copy .env.example .env
 ```
 
+Edit `.env` with your token, chat ID, and filters.
+
+## Instant mode with Workana session (recommended)
+
+If you provide your `WORKANA_COOKIE`, the bot connects to Workana's **Pusher WebSocket** — the same push system their website uses when you're logged in. New IT & Programming jobs trigger Telegram alerts within about **1 second**.
+
+```env
+MONITOR_MODE=pusher
+WORKANA_COOKIE=workana_session=your_session_here
+```
+
+Export the cookie from your browser while logged into Workana (DevTools → Application → Cookies).
+
+## Polling fallback
+
+If no cookie is set, the bot falls back to polling every 5 seconds:
+
+```env
+MONITOR_MODE=poll
+```
+
+## Configuration
+
+| Variable | Description |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | Bot token from BotFather |
+| `TELEGRAM_CHAT_ID` | Destination chat ID |
+| `POLL_INTERVAL_SECONDS` | Seconds between checks (default: **5**) |
+| `MIN_POLL_INTERVAL_SECONDS` | Safety floor (default: 3, do not lower) |
+| `BOOTSTRAP_ON_START` | Skip alerting for jobs already listed at startup |
+| `WORKANA_LANGUAGE` | `en`, `es`, or `pt` |
+| `WORKANA_CATEGORY` | Default: `it-programming` |
+| `PREFERRED_SKILLS` | Comma-separated skills used for scoring |
+| `KEYWORDS` | Only notify if title/description contains one |
+| `EXCLUDED_KEYWORDS` | Skip jobs containing these terms |
+| `MIN_BUDGET_USD` | Minimum budget ceiling in USD |
+| `MAX_BIDS` | Skip crowded listings |
+| `MAX_AGE_HOURS` | Ignore older postings |
+
+## Scoring
+
+Each job gets a relevance score based on:
+
+- Matching preferred skills
+- Keyword matches
