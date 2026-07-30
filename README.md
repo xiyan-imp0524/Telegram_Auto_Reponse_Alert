@@ -88,3 +88,29 @@ Each job gets a relevance score based on:
 
 - Matching preferred skills
 - Keyword matches
+- Low bid count (less competition)
+- Higher budget
+- Freshness (posted recently)
+- Urgent flag
+
+Jobs are sorted by score before notification.
+
+## Project structure
+
+```
+telegram-bot/
+├── main.py                 # Polling entry point
+├── config.py               # Environment configuration
+├── workana/
+│   ├── scraper.py          # Workana HTML/JSON parser
+│   ├── optimizer.py        # Filtering and scoring
+│   └── storage.py          # SQLite deduplication
+└── telegram_bot/
+    └── notifier.py         # Telegram message sender
+```
+
+## Notes
+
+- Workana has no public API; this uses the same embedded data their website renders.
+- Respect Workana's terms of service and avoid aggressive polling.
+- Keep your `.env` private — it contains your bot token.
