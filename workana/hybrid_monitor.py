@@ -278,3 +278,95 @@ class HybridMonitor:
             on_alert=self._send_health_alert,
             on_fatal=self._fatal_restart,
         )
+        self.session = WorkanaSession.from_cookie(
+            config.workana_cookie,
+            language=config.workana_language,
+        )
+        self._client = WorkanaPusherClient(
+            self.session,
+            languages=config.workana_languages,
+            on_project_added=lambda payload: self.dispatcher.handle_pusher_payload(
+                payload, source="pusher:added"
+            ),
+            on_notification=lambda payload: self.dispatcher.handle_pusher_payload(
+                payload, source="pusher:notification"
+            ),
+        )
+        self._stop = threading.Event()
+        self._fatal = False
+
+    def run_forever(self) -> None:
+        self._startup_probe()
+
+        if self.config.bootstrap_on_start and self.dispatcher.store.count_seen() == 0:
+            seeded = self.dispatcher.bootstrap()
+            logger.info("Bootstrapped %s existing jobs", seeded)
+
+        caught = self.dispatcher.catch_up_recent(max_age_hours=6)
+        if caught:
+            logger.info("Catch-up sent %s missed recent job(s)", caught)
+
+        langs = ", ".join(self.config.workana_languages)
+        self.dispatcher.notifier.send_text(
+            "Workana monitor started.\n"
+            "Mode: hybrid (Pusher + polling backup)\n"
+            f"Category: {self.config.workana_category}\n"
+            f"Languages: {langs}\n"
+            f"Pusher channels: projects-{' / projects-'.join(self.config.workana_languages)}\n"
+            f"Poll backup: every {self.config.poll_interval_seconds}s\n"
+            "Health watchdog: ON (Telegram alert + auto-restart on outage)"
+        )
+
+        self._client.start()
+        interval = self.config.poll_interval_seconds
+
+        try:
+            while not self._stop.is_set() and not self._fatal:
+                try:
+                    sent, fetched = self.dispatcher.poll_once()
+                    self.health.record_success(result_count=fetched)
+                    if sent:
+                        logger.info("Poll backup sent %s alert(s)", sent)
+                except Exception as exc:
+                    self.health.record_failure(exc)
+                    if isinstance(exc, CloudflareBlockedError):
+                        logger.error("Cloudflare is blocking Workana requests")
+                    else:
+                        logger.exception("Poll backup failed")
+                self._stop.wait(interval)
+        except KeyboardInterrupt:
+            logger.info("Stopping hybrid monitor")
+        finally:
+            self._client.stop()
+            self.dispatcher.close()
+
+        if self._fatal:
+            sys.exit(2)
+
+    def _startup_probe(self) -> None:
+        try:
+            results = self.dispatcher.scraper.fetch_all_language_results(page=1)
+            if not results:
+                raise RuntimeError("Startup probe returned 0 Workana jobs")
+            self.health.probe_ok(detail=f"startup_results={len(results)}")
+            logger.info("Startup probe OK — %s jobs visible", len(results))
+        except Exception as exc:
+            message = (
+                "Workana monitor FAILED startup health check.\n"
+                f"{exc}\n"
+                "Process will exit so run_forever can retry."
+            )
+            logger.exception("%s", message)
+            try:
+                self.dispatcher.notifier.send_text(message)
+            except Exception:
+                logger.exception("Could not send startup failure alert")
+            raise
+
+    def _send_health_alert(self, message: str) -> None:
+        self.dispatcher.notifier.send_text(message)
+
+    def _fatal_restart(self, message: str) -> None:
+        logger.error("Fatal health condition — exiting for restart: %s", message)
+        self._fatal = True
+        self._stop.set()
